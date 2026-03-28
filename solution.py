@@ -1,7 +1,8 @@
 import json
 from pathlib import Path
 import re
-
+from collections import defaultdict
+import math
 
 DATA_PATH = Path("data//companies.jsonl")
 
@@ -120,6 +121,22 @@ def apply_structured_filter(companies, constraints):
 
     print(f"Structured filter: {len(qualified)}/{len(companies)} companies passed")
     return qualified
+
+#Flatten all relevant fields of a company into a single string
+def company_to_text(company):
+    parts = []
+
+    simple_fields =[
+        "operational_name",
+        "address",
+        "descrription",
+    ]
+    for field in simple_fields:
+        value = company.get(field)
+        if value is not None:
+            parts.append(str(value))
+
+
 
 # Run this to verify everything works
 if __name__ == "__main__":
