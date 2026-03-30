@@ -3,6 +3,8 @@ from pathlib import Path
 import re
 from collections import defaultdict
 import math
+import os
+from groq import Groq
 
 DATA_PATH = Path("data//companies.jsonl")
 
@@ -278,4 +280,16 @@ if __name__ == "__main__":
             address = company.get("address", "N/A")
             print(f"  {i}. {name} — {address}")
 
+
+
+    #API Test
+    client = Groq(api_key= os.environ.get("GROQ_API_KEY"))
+
+    message = client.chat.completions.create(
+        model = "llama-3.3-70b-versatile",
+        messages=[
+            {"role": "user", "content": "Salut! Spune-mi 10 companii cunoscute din Romania"}
+        ]
+    )
+    print(message.choices[0].message.content)
     
