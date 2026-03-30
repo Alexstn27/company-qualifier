@@ -241,7 +241,56 @@ def tfidf_top_k(query, companies, k):
     print(f"TF-IDF: selected top {len(top_k_companies)} candidates")
     return top_k_companies
 
+#Build a compact text summary of a company for the LLM prompt
+def build_company_summary(company):
+    lines = []
+    if company.get("operational_name"):
+        lines.append(f"Name: {company['operational_name']}")
+    if company.get("address"):
+        lines.append(f"Location: {company['address']}")
+    if company.get("description"):
+        description = company["description"][:300]
+        lines.append(f"Description: {description}")
+    if company.get("core_offerings"):
+        offerings = company["core_offerings"]
+        if isinstance(offerings, list):
+            offerings_text= ", ".join(offerings)
+        else:
+            offerings_text = str(offerings)
+        lines.append(f"Core Offerings: {offerings_text}")
+    if company.get("target_markets"):
+        markets = company["target_markets"]
+        if isinstance(markets, list):
+            markets_text= ", ".join(markets)
+        else:
+            markets_text = str(markets)
+        lines.append(f"Target Markets: {markets_text}")
+    if company.get("primary_naics"):
+        naics = company["primary_naics"]
+        if isinstance(naics, dict):
+            lines.append(f"Industry: {naics.get('label', '')}")
+    if company.get("employee_count"):
+        lines.append(f"Employees: {company["employee_count"]}")
+    if company.get("revenue"):
+        lines.append(f"Revenue: {company['revenue']:,.0f}")
+    if company.get("year_founded"):
+        lines.append(f"Founded: {int(company['year_founded'])}")
+    if company.get("is_public") is not None:
+        lines.append(f"Public: {company['is_public']}")
 
+    return "\n".join(lines)
+
+# Send a batch of companies to Groq for qualification
+def llm_qualify_batch(companies):
+
+    #build the numbered list of companies for the prompt
+    numbered_companies = ""
+    for i, company in enumerate(companies):
+        summary = build_company_summary(company)
+        numbered_companies += f"[{i+1}]\n{summary}\n"
+    
+    #build the full prompt
+    prompt = 
 
 
 # Run this to verify everything works
