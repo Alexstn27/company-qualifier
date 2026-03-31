@@ -1,3 +1,4 @@
+import time
 import json
 from pathlib import Path
 import re
@@ -5,6 +6,7 @@ from collections import defaultdict
 import math
 import os
 from groq import Groq
+
 
 DATA_PATH = Path("data//companies.jsonl")
 
@@ -281,7 +283,7 @@ def build_company_summary(company):
     return "\n".join(lines)
 
 # Send a batch of companies to Groq for qualification
-def llm_qualify_batch(companies):
+def llm_qualify_batch(client, query, companies):
 
     #build the numbered list of companies for the prompt
     numbered_companies = ""
@@ -290,55 +292,136 @@ def llm_qualify_batch(companies):
         numbered_companies += f"[{i+1}]\n{summary}\n"
     
     #build the full prompt
-    prompt = 
+    prompt = f"""You are a company qualification assistant. Evaluate whether each company truly satisfies the following user query.
 
+USER QUERY: "{query}"
+
+COMPANIES TO EVALUATE:
+{numbered_companies}
+
+For each company, respond with ONLY a JSON array where each element has:
+- "id": the number shown in brackets (integer)
+- "score": a float from 0.0 to 1.0 indicating how well this company matches the query
+  (1.0 = perfect match, 0.0 = completely irrelevant, 0.5 = borderline)
+- "reason": one concise sentence explaining your score
+
+Be strict: only companies that genuinely satisfy the query intent should score above 0.6.
+Respond with the JSON array only. No extra text, no markdown."""
+
+    #make the API call
+    response = client.chat.completions.create(
+        model = "llama-3.3-70b-versatile",
+        max_tokens = 2000,
+        messages=[
+            {"role": "user", "content": prompt}
+        ]
+    )
+    #extract the text from the response
+    raw_text= response.choices[0].message.content.strip()
+
+
+    # clean up any markdown formatting the model might have added
+    raw_text = re.sub(r"```json\s*", "", raw_text)
+    raw_text = re.sub(r"```\s*", "", raw_text)
+    raw_text = raw_text.strip()
+
+    #parse the JSON response
+    try:
+        results = json.loads(raw_text)
+    # if that fails, extract data with regex as fallback
+    # this works even when reason values have no quotes
+    except json.JSONDecodeError:
+      
+        results = []
+        pattern = r'"id"\s*:\s*(\d+).*?"score"\s*:\s*([0-9.]+).*?"reason"\s*:\s*"?([^"}\n][^}\n]*?)"?\s*[,}]'
+        matches = re.findall(pattern, raw_text, re.DOTALL)
+        for match in matches:
+            results.append({
+                "id": int(match[0]),
+                "score": float(match[1]),
+                "reason": match[2].strip()
+            })
+
+        if not results:
+            print(f"  Warning: could not parse LLM response, skipping batch")
+            print(f"  Problematic response: {raw_text[:300]}")
+            return []
+
+    #match each result back to its company
+    scored_companies = []
+    for result in results:
+        company_id=result.get("id")
+        score = float(result.get("score", 0.0))
+        reason = result.get("reason", "")
+
+        #company id starts at 1 but index starts at 0
+        company_index = company_id -1
+
+        if 0<= company_index< len(companies):
+            company = companies[company_index]
+            scored_companies.append((company, score, reason))
+    
+    return scored_companies
+
+#Run LLM qualofication over all candidates in batches of 10
+#returns all resulsts sorted by score descending
+def llm_qualify_all(client, query, candidates):
+    BATCH_SIZE = 10
+    all_results = []
+    total_batches = (len(candidates)+BATCH_SIZE-1)//BATCH_SIZE
+
+    for i in range(0, len(candidates), BATCH_SIZE):
+        batch = candidates[i: i+BATCH_SIZE]
+        batch_number = (i//BATCH_SIZE) + 1
+
+        print(f" LLM batch {batch_number}/{total_batches} ({len(batch)} companies)...")
+
+        results= llm_qualify_batch(client, query, batch)
+        all_results.extend(results)
+
+        time.sleep(0.3)
+
+    def get_score(result_tuple):
+        return result_tuple[1]
+    
+    all_results.sort(key=get_score, reverse= True)
+    return all_results
 
 # Run this to verify everything works
 if __name__ == "__main__":
     companies = load_companies(DATA_PATH)
+    client = Groq()
 
-    # Show the first company so you can see what the data looks like
-    print("\nFirst company in the dataset:")
-    print(json.dumps(companies[0], indent=2))
-
-    # Show some basic statistics
-    print(f"\nCompanies with a description: {sum(1 for c in companies if c.get('description'))}")
-    print(f"Companies with an address: {sum(1 for c in companies if c.get('address'))}")
-    print(f"Public companies: {sum(1 for c in companies if c.get('is_public') == True)}")
-
-    print(f"test part2")
     test_queries = [
-        "Public software companies with more than 1,000 employees",
-        "Clean energy startups founded after 2018 with fewer than 200 employees",
-        "Construction companies in the United States with revenue over $50 million",
+       # "Public software companies with more than 1,000 employees",
+       # "Clean energy startups founded after 2018 with fewer than 200 employees",
+        #"Construction companies in the United States with revenue over $50 million",
         "Logistics companies in Romania",
-        "Pharmaceutical companies in Switzerland",
+       # "Pharmaceutical companies in Switzerland",
     ]
 
     for query in test_queries:
-        print(f"\nQUery: {query}")
+       # print(f"\nQUery: {query}")
+        print(f"\n{'=' * 50}")
+        print(f"Query: {query}")
+        print(f"{'=' * 50}")
+
         constraints = parse_structured_constraints(query)
         #print(f"Constraints found: {constraints}")
         result = apply_structured_filter(companies, constraints)
         #print(f"Companies remaining: {len(result)}")
         top_30 = tfidf_top_k(query, result, k=30)
     
-        print("Top 5 candidates:")
-        for i, company in enumerate(top_30[:5], 1):
+        print("Running LLM qualification...")
+        results = llm_qualify_all(client, query, top_30)
+
+        print(f"\nTop 5 candidates:")
+        for i, (company, score, reason) in enumerate(results[:5], 1):
             name = company.get("operational_name", "Unknown")
-            address = company.get("address", "N/A")
-            print(f"  {i}. {name} — {address}")
+            print(f"  {i}. [{score:.2f}] {name}")
+            print(f"   {reason}")
 
 
 
-    #API Test
-    client = Groq(api_key= os.environ.get("GROQ_API_KEY"))
-
-    message = client.chat.completions.create(
-        model = "llama-3.3-70b-versatile",
-        messages=[
-            {"role": "user", "content": "Salut! Spune-mi 10 companii cunoscute din Romania"}
-        ]
-    )
-    print(message.choices[0].message.content)
+    
     
