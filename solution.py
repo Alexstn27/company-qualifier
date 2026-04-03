@@ -4,14 +4,13 @@ from pathlib import Path
 import re
 from collections import defaultdict
 import math
-import os
 from groq import Groq
 
 
 DATA_PATH = Path("data//companies.jsonl")
 
+#Read all companies from the JSONL file and return them as a list of dictionarieso
 def load_companies(path):
-        #Read all companies from the JSONL file and return them as a list of dictionarieso
     companies = []
 
     with open (path ,"r", encoding="utf-8") as file:
@@ -309,16 +308,20 @@ Be strict: only companies that genuinely satisfy the query intent should score a
 Respond with the JSON array only. No extra text, no markdown."""
 
     #make the API call
-    response = client.chat.completions.create(
+    try: 
+        response = client.chat.completions.create(
         model = "llama-3.3-70b-versatile",
         max_tokens = 2000,
         messages=[
             {"role": "user", "content": prompt}
         ]
-    )
+        )
+    except Exception as e:
+        print(f"  API call failed: {e}")
+        return []
+    
     #extract the text from the response
     raw_text= response.choices[0].message.content.strip()
-
 
     # clean up any markdown formatting the model might have added
     raw_text = re.sub(r"```json\s*", "", raw_text)
@@ -328,10 +331,10 @@ Respond with the JSON array only. No extra text, no markdown."""
     #parse the JSON response
     try:
         results = json.loads(raw_text)
-    # if that fails, extract data with regex as fallback
-    # this works even when reason values have no quotes
+
     except json.JSONDecodeError:
-      
+        # if that fails, extract data with regex as fallback
+        # this works even when reason values have no quotes
         results = []
         pattern = r'"id"\s*:\s*(\d+).*?"score"\s*:\s*([0-9.]+).*?"reason"\s*:\s*"?([^"}\n][^}\n]*?)"?\s*[,}]'
         matches = re.findall(pattern, raw_text, re.DOTALL)
@@ -387,41 +390,90 @@ def llm_qualify_all(client, query, candidates):
     all_results.sort(key=get_score, reverse= True)
     return all_results
 
+#Qualification pipeline for a single query
+#returns a ranked list of matching companies with scores and reasons
+def qualify_companies(query, companies, client, top_k=30, score_threshold=0.65, max_results=15):
+    
+    print(f"\n{'=' * 50}")
+    print(f"Query: {query}")
+    print(f"{'=' * 50}")
+
+    # structured filter
+    constraints = parse_structured_constraints(query)
+    filtered = apply_structured_filter(companies, constraints)
+
+    #TF-IDF pre-ranking, select top candidates
+    candidates = tfidf_top_k(query, filtered, k=top_k)
+
+    #LLM batch qualification
+    print("Running LLM qualification...")
+    scored = llm_qualify_all(client, query, candidates)
+
+    # keep only companies above the score threshold
+    qualified = []
+    for company, score, reason in scored:
+        if score >= score_threshold:
+            # attach score and reason directly to the company dictionary
+            company["_score"] = score
+            company["_reason"] = reason
+            qualified.append(company)
+
+    # cap the final results
+    qualified = qualified[:max_results]
+
+    print(f"Qualified: {len(qualified)} companies")
+    return qualified
+
+# Save all query results to a JSON file.
+def save_results(all_results, output_path="results.json"):
+  
+    with open(output_path, "w", encoding="utf-8") as file:
+        json.dump(all_results, file, indent=2, ensure_ascii=False)
+
+    print(f"\nResults saved to {output_path}")
+
 # Run this to verify everything works
 if __name__ == "__main__":
+
     companies = load_companies(DATA_PATH)
     client = Groq()
 
-    test_queries = [
-       # "Public software companies with more than 1,000 employees",
-       # "Clean energy startups founded after 2018 with fewer than 200 employees",
-        #"Construction companies in the United States with revenue over $50 million",
-        "Logistics companies in Romania",
-       # "Pharmaceutical companies in Switzerland",
+    # all 12 queries from the challenge
+    queries = [
+        "Logistic companies in Romania",
+        "Public software companies with more than 1,000 employees",
+        "Food and beverage manufacturers in France",
+        "Companies that could supply packaging materials for a direct-to-consumer cosmetics brand",
+        "Construction companies in the United States with revenue over $50 million",
+        "Pharmaceutical companies in Switzerland",
+        "B2B SaaS companies providing HR solutions in Europe",
+        "Clean energy startups founded after 2018 with fewer than 200 employees",
+        "Fast-growing fintech companies competing with traditional banks in Europe",
+        "E-commerce companies using Shopify or similar platforms",
+        "Renewable energy equipment manufacturers in Scandinavia",
+        "Companies that manufacture or supply critical components for electric vehicle battery production",
     ]
 
-    for query in test_queries:
-       # print(f"\nQUery: {query}")
-        print(f"\n{'=' * 50}")
-        print(f"Query: {query}")
-        print(f"{'=' * 50}")
+    # run the full pipeline for every query
+    all_results = {}
 
-        constraints = parse_structured_constraints(query)
-        #print(f"Constraints found: {constraints}")
-        result = apply_structured_filter(companies, constraints)
-        #print(f"Companies remaining: {len(result)}")
-        top_30 = tfidf_top_k(query, result, k=30)
-    
-        print("Running LLM qualification...")
-        results = llm_qualify_all(client, query, top_30)
+    for query in queries:
+        results = qualify_companies(query, companies, client)
 
-        print(f"\nTop 5 candidates:")
-        for i, (company, score, reason) in enumerate(results[:5], 1):
+        # print top 5 for this query
+        print(f"\nTop 5 results:")
+        for i, company in enumerate(results[:5], 1):
             name = company.get("operational_name", "Unknown")
+            score = company.get("_score", 0)
+            reason = company.get("_reason", "")
             print(f"  {i}. [{score:.2f}] {name}")
-            print(f"   {reason}")
+            print(f"       {reason}")
 
+        # store results for saving
+        all_results[query] = results
 
+    # save everything to results.json
+    save_results(all_results)
 
     
     
